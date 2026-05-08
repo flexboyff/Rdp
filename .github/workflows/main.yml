@@ -6,7 +6,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 30  # Reduced to avoid auto-cancellation
+    timeout-minutes: 3600
 
     steps:
       - name: Configure Core RDP Settings
@@ -20,7 +20,7 @@ jobs:
                              -Name "SecurityLayer" -Value 0 -Force
 
           # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
           # For testing, allow any incoming connection on port 3389
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
@@ -30,7 +30,6 @@ jobs:
           Restart-Service -Name TermService -Force
 
       - name: Create RDP User with Secure Password
-        id: create_user
         run: |
           Add-Type -AssemblyName System.Security
           $charSet = @{
@@ -51,9 +50,7 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           
-          # Save password for other steps
-          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-          echo "password=$password" >> $env:GITHUB_OUTPUT
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
           
           if (-not (Get-LocalUser -Name "RDP")) {
               Write-Error "User creation failed"
@@ -88,8 +85,7 @@ jobs:
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          echo "tailscale_ip=$tsIP" >> $env:GITHUB_OUTPUT
-
+      
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
@@ -102,65 +98,16 @@ jobs:
           }
           Write-Host "TCP connectivity successful!"
 
-      # ============================================
-      # 🔑 METHOD 1: Save Credentials as Artifact (BEST)
-      # ============================================
-      - name: Save RDP Credentials as Artifact
+      - name: Maintain Connection
         run: |
-          $credContent = @"
-===========================================
-RDP CREDENTIALS - RUN #${{ github.run_id }}
-===========================================
-Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-Repository: ${{ github.repository }}
-Run ID: ${{ github.run_id }}
-
-CONNECTION DETAILS:
--------------------
-Tailscale IP: $env:TAILSCALE_IP
-Username: RDP
-Password: $env:RDP_PASSWORD
-Port: 3389
-
-CONNECTION COMMAND:
--------------------
-mstsc.exe /v:$env:TAILSCALE_IP:3389
-
-PASSWORD FOR COPY:
--------------------
-$env:RDP_PASSWORD
-
-===========================================
-"@
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "==================`n"
           
-          $credPath = "$env:GITHUB_WORKSPACE\rdp_credentials_${{ github.run_id }}.txt"
-          $credContent | Out-File -FilePath $credPath -Encoding UTF8
-          Write-Host "✅ Credentials saved to: $credPath"
-
-      - name: Upload Credentials Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rdp-credentials-${{ github.run_id }}
-          path: rdp_credentials_${{ github.run_id }}.txt
-          retention-days: 7
-          if-no-files-found: error
-
-      # ============================================
-      # 📝 METHOD 2: Add to Job Summary (Visible in UI)
-      # ============================================
-      - name: Add RDP Credentials to Job Summary
-        run: |
-          $summary = @"
-## 🎯 RDP Credentials - Run #${{ github.run_id }}
-
-| Setting | Value |
-|---------|-------|
-| **Tailscale IP** | `$env:TAILSCALE_IP` |
-| **Username** | `RDP` |
-| **Password** | `$env:RDP_PASSWORD` |
-| **Port** | `3389` |
-| **Status** | ✅ Active |
-
-### Connection Command:
-```powershell
-mstsc.exe /v=$env:TAILSCALE_IP:3389
+          # Keep runner active indefinitely (or until manually cancelled)
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
